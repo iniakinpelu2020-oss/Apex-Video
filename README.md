@@ -82,6 +82,8 @@ repo: 'Apex-Video', path: '/apps/video/' }`. The "Open Apex Voice" link is `../v
 
 ## State of this repo
 
-The timeline and recorder logic were checked with `node --check` only. Not yet exercised in a browser:
-the actual MediaRecorder export, the WebM playback in the take player, Safari's MP4 path, and the
-canvas text fitting at each frame size.
+Exercised in Chrome against the bundled build: Generate recorded the two default slides into a
+2.9 MB `video/webm;codecs=vp9` at 1280 × 720, the download link appeared, the blob answered with real
+video dimensions when loaded into a video element, and Preview toggled to Stop and back without
+blocking a second take. Not verified: Safari's MP4 path, playback of the take inside the app's own
+player (the export was played back outside it), and text fitting at the 1:1 and 9:16 sizes.
