@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080a12">
+<title>Apex Video</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div class="brand-text">
+      <h1>Apex Video</h1>
+      <p id="statLine" class="stamp">Text slides, recorded on this device.</p>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage-panel">
+    <div class="stage">
+      <canvas id="preview" width="1280" height="720" aria-label="Slide preview"></canvas>
+    </div>
+    <div class="row between">
+      <p id="stageMeta" class="stamp">1280 × 720 · 0 slides</p>
+      <p id="recPct" class="stamp">Ready</p>
+    </div>
+    <div class="track" role="progressbar" aria-label="Render progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="recTrack">
+      <span id="recBar" class="fill"></span>
+    </div>
+    <div class="row">
+      <button id="playBtn" class="btn" type="button">Preview</button>
+      <button id="recordBtn" class="btn primary" type="button">Generate video</button>
+      <a id="downloadLink" class="btn ghost" download hidden>Download</a>
+    </div>
+    <div id="take" class="take" hidden>
+      <video id="player" controls playsinline></video>
+      <p id="takeMeta" class="stamp"></p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="grid2">
+      <div>
+        <label class="label" for="ratioSelect">Frame</label>
+        <select id="ratioSelect">
+          <option value="16:9">16:9 &middot; 1280 × 720</option>
+          <option value="1:1">1:1 &middot; 1080 × 1080</option>
+          <option value="9:16">9:16 &middot; 720 × 1280</option>
+        </select>
+      </div>
+      <div>
+        <label class="label" for="themeSelect">Theme</label>
+        <select id="themeSelect">
+          <option value="aurora">Aurora</option>
+          <option value="ember">Ember</option>
+          <option value="grove">Grove</option>
+          <option value="slate">Slate</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row between slides-head">
+      <h2 class="subhead">Slides</h2>
+      <button id="addSlideBtn" class="btn small" type="button">Add slide</button>
+    </div>
+
+    <ul id="slideList" class="slides"></ul>
+    <p id="slidesEmpty" class="stamp" hidden>No slides yet - add one to start.</p>
+
+    <p class="stamp clamp">Each slide is on screen for its own duration, in order. The recording is
+      silent: browsers cannot capture speech synthesis into a media stream, so narration is not
+      muxed into the file.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <span class="stamp">Rendering and recording happen in this tab. Nothing is uploaded and no key is used.</span>
+  <a class="link" href="../voice/">Need narration? Open Apex Voice &rarr;</a>
+</footer>
+
+<p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+
+<script src="./app.js"></script>
+</body>
+</html>
