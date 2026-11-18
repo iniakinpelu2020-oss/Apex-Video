@@ -1,6 +1,4 @@
-'use strict';
-
-var CACHE = 'apex-video-v1';
+var CACHE = 'apex-video-v2';
 var SHELL = [
   './',
   './index.html',

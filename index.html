@@ -16,7 +16,7 @@
     <span class="mark" aria-hidden="true"></span>
     <div class="brand-text">
       <h1>Apex Video</h1>
-      <p id="statLine" class="stamp">Text slides, recorded on this device.</p>
+      <p id="statLine" class="stamp">Text slides and voice-over, recorded on this device.</p>
     </div>
   </div>
 </header>
@@ -65,6 +65,30 @@
       </div>
     </div>
 
+    <div class="vo">
+      <div class="row between slides-head">
+        <h2 class="subhead">Voice-over</h2>
+        <button id="voiceTestBtn" class="btn small" type="button">Test voice</button>
+      </div>
+      <div class="grid2">
+        <div>
+          <label class="label" for="voiceSelect">Voice</label>
+          <select id="voiceSelect">
+            <option value="">Loading voices&hellip;</option>
+          </select>
+        </div>
+        <div>
+          <label class="label" for="rateRange">Speed <span id="rateVal" class="rate">1&times;</span></label>
+          <input id="rateRange" class="range" type="range" min="0.6" max="1.6" step="0.05" value="1">
+        </div>
+      </div>
+      <label class="check">
+        <input id="captureVoice" type="checkbox">
+        <span>Record the voice-over into the file</span>
+      </label>
+      <p id="voHint" class="stamp clamp"></p>
+    </div>
+
     <div class="row between slides-head">
       <h2 class="subhead">Slides</h2>
       <button id="addSlideBtn" class="btn small" type="button">Add slide</button>
@@ -73,15 +97,16 @@
     <ul id="slideList" class="slides"></ul>
     <p id="slidesEmpty" class="stamp" hidden>No slides yet - add one to start.</p>
 
-    <p class="stamp clamp">Each slide is on screen for its own duration, in order. The recording is
-      silent: browsers cannot capture speech synthesis into a media stream, so narration is not
-      muxed into the file.</p>
+    <p class="stamp clamp">Each slide keeps its own text, voice-over and duration. The voice-over is
+      read live as the slides run; to put it in the file, tick &ldquo;Record the voice-over into the
+      file&rdquo; before generating and share this tab with its audio. A canvas stream on its own
+      carries pictures only, so an unticked take is silent.</p>
   </section>
 </main>
 
 <footer class="foot">
   <span class="stamp">Rendering and recording happen in this tab. Nothing is uploaded and no key is used.</span>
-  <a class="link" href="../voice/">Need narration? Open Apex Voice &rarr;</a>
+  <a class="link" href="../voice/">Need a standalone script reader? Open Apex Voice &rarr;</a>
 </footer>
 
 <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
