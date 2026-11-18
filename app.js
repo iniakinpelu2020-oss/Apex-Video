@@ -1,10 +1,15 @@
-/* Apex Video - text slides rendered on a canvas and recorded to a video file.
+/* Apex Video - text slides rendered on a canvas and recorded to a video file,
+ * with a voice-over read by the device's own speech synthesis.
  *
- * The whole pipeline is local: canvas frames -> captureStream -> MediaRecorder.
- * The file has no audio track, because speech synthesis cannot be captured into
- * a media stream; that is a browser limit, not a setting here.
+ *   canvas frames -> captureStream -> MediaRecorder
+ *   narration text -> SpeechSynthesisUtterance, started as each slide begins
  *
- *   localStorage  apex.video.v1  { ratio, theme, slides }
+ * A canvas stream carries pictures only, and no browser lets a page tap speech
+ * synthesis directly. The one route into the file is recording the tab's own
+ * audio, which the browser grants only when the user shares this tab. Without
+ * that share the take is silent and the narration just plays alongside.
+ *
+ *   localStorage  apex.video.v1  { ratio, theme, slides, vo }
  */
 (function () {
   'use strict';
@@ -28,11 +33,21 @@
     'video/mp4;codecs=avc1.42E01E',
     'video/mp4'
   ];
+  /* Same containers, but a track pair that can hold the voice-over. */
+  var AUDIO_MIMES = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=opus',
+    'video/webm',
+    'video/mp4'
+  ];
   var MIN_DUR = 1;
   var MAX_DUR = 15;
   var FADE_MS = 420;
   var FONT = '700 %spx ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   var MAX_SLIDES = 24;
+  var MAX_VO = 400;
+  var WORDS_PER_SEC = 2.7;
 
   var canvas = document.getElementById('preview');
   var ctx = canvas.getContext('2d');
@@ -51,13 +66,24 @@
     takeMeta: document.getElementById('takeMeta'),
     ratioSelect: document.getElementById('ratioSelect'),
     themeSelect: document.getElementById('themeSelect'),
+    voiceSelect: document.getElementById('voiceSelect'),
+    rateRange: document.getElementById('rateRange'),
+    rateVal: document.getElementById('rateVal'),
+    voiceTestBtn: document.getElementById('voiceTestBtn'),
+    captureVoice: document.getElementById('captureVoice'),
+    voHint: document.getElementById('voHint'),
     addSlideBtn: document.getElementById('addSlideBtn'),
     slideList: document.getElementById('slideList'),
     slidesEmpty: document.getElementById('slidesEmpty'),
     toast: document.getElementById('toast')
   };
 
-  var state = { ratio: '16:9', theme: 'aurora', slides: [] };
+  var state = {
+    ratio: '16:9',
+    theme: 'aurora',
+    slides: [],
+    vo: { voiceURI: '', rate: 1, capture: false }
+  };
   var selected = 0;
   var rows = [];
   var mode = null;            // null | 'preview' | 'record'
@@ -80,10 +106,12 @@
 
   function normalizeSlide(raw) {
     var text = raw && typeof raw.text === 'string' ? raw.text : '';
+    var vo = raw && typeof raw.narration === 'string' ? raw.narration : '';
     var dur = Number(raw && raw.duration);
     return {
       id: raw && raw.id ? String(raw.id) : uid(),
       text: text,
+      narration: vo.slice(0, MAX_VO),
       duration: clamp(Number.isFinite(dur) && dur ? dur : 3, MIN_DUR, MAX_DUR)
     };
   }
@@ -101,10 +129,18 @@
     state.theme = THEMES[raw.theme] ? raw.theme : 'aurora';
     state.slides = (Array.isArray(raw.slides) ? raw.slides : []).slice(0, MAX_SLIDES).map(normalizeSlide);
 
+    var vo = raw.vo && typeof raw.vo === 'object' ? raw.vo : {};
+    var rate = Number(vo.rate);
+    state.vo = {
+      voiceURI: typeof vo.voiceURI === 'string' ? vo.voiceURI : '',
+      rate: clamp(Number.isFinite(rate) && rate ? rate : 1, 0.6, 1.6),
+      capture: Boolean(vo.capture)
+    };
+
     if (!state.slides.length) {
       state.slides = [
-        normalizeSlide({ text: 'Apex Video', duration: 3 }),
-        normalizeSlide({ text: 'Write a slide, set how long it shows, then generate the file.', duration: 4 })
+        normalizeSlide({ text: 'Apex Video', duration: 3, narration: 'This video was written and read on this device.' }),
+        normalizeSlide({ text: 'Write a slide, add its voice-over, then generate the file.', duration: 4 })
       ];
     }
   }
@@ -166,6 +202,163 @@
     var n = state.slides.length;
     el.stageMeta.textContent = s.w + ' \u00D7 ' + s.h + ' \u00B7 ' +
       n + (n === 1 ? ' slide' : ' slides') + ' \u00B7 ' + fmt(totalMs());
+  }
+
+  /* ---------- voice-over ---------- */
+
+  var voices = [];
+  var spoken = null;          // the utterance currently playing
+  var spokenIndex = -1;       // slide whose narration has started
+  var captureStream = null;   // tab capture while narration is being recorded
+
+  function synth() {
+    return window.speechSynthesis || null;
+  }
+
+  function fillVoices() {
+    var s = synth();
+    voices = s ? s.getVoices() : [];
+    if (!el.voiceSelect) return;
+    el.voiceSelect.textContent = '';
+
+    var list = voices.slice().sort(function (a, b) {
+      return String(a.lang || '').localeCompare(String(b.lang || '')) || String(a.name).localeCompare(String(b.name));
+    });
+
+    if (!list.length) {
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'No voices on this device';
+      el.voiceSelect.appendChild(none);
+      el.voiceSelect.disabled = true;
+      return;
+    }
+
+    el.voiceSelect.disabled = false;
+    var groups = {};
+    list.forEach(function (voice) {
+      var lang = voice.lang || 'other';
+      if (!groups[lang]) {
+        groups[lang] = document.createElement('optgroup');
+        groups[lang].label = lang;
+        el.voiceSelect.appendChild(groups[lang]);
+      }
+      var option = document.createElement('option');
+      option.value = voice.voiceURI;
+      option.textContent = voice.name;
+      groups[lang].appendChild(option);
+    });
+
+    var match = list.filter(function (v) { return v.voiceURI === state.vo.voiceURI; })[0];
+    if (!match) match = list.filter(function (v) { return /^en/i.test(v.lang || ''); })[0] || list[0];
+    state.vo.voiceURI = match.voiceURI;
+    el.voiceSelect.value = match.voiceURI;
+  }
+
+  function voiceFor() {
+    return voices.filter(function (v) { return v.voiceURI === state.vo.voiceURI; })[0] || null;
+  }
+
+  function stopVoice() {
+    var s = synth();
+    spoken = null;
+    if (s && (s.speaking || s.pending)) s.cancel();
+  }
+
+  function speak(text) {
+    var s = synth();
+    var body = String(text || '').trim();
+    if (!s || !body) return;
+
+    stopVoice();
+    var u = new SpeechSynthesisUtterance(body);
+    var voice = voiceFor();
+    if (voice) u.voice = voice;
+    u.rate = state.vo.rate;
+    u.pitch = 1;
+    u.volume = 1;
+
+    u.onend = function () { if (spoken === u) spoken = null; };
+    u.onerror = function (event) {
+      if (spoken !== u) return;
+      if (event && (event.error === 'interrupted' || event.error === 'canceled')) return;
+      spoken = null;
+      toast('The voice stopped: ' + ((event && event.error) || 'unknown error'));
+    };
+
+    /* Chrome drops an utterance queued in the same task as cancel(). */
+    spoken = u;
+    setTimeout(function () {
+      if (spoken !== u) return;
+      s.speak(u);
+    }, 60);
+  }
+
+  function narrationOf(slide) {
+    return String((slide && slide.narration) || '').trim();
+  }
+
+  function narrationCount() {
+    return state.slides.filter(function (s) { return narrationOf(s); }).length;
+  }
+
+  function estimate(text) {
+    var words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+    if (!words) return 0;
+    return words / (WORDS_PER_SEC * state.vo.rate);
+  }
+
+  function wantsAudio() {
+    return state.vo.capture && !!synth() && narrationCount() > 0;
+  }
+
+  function paintVoHint() {
+    if (!el.voHint) return;
+    var n = narrationCount();
+    if (!synth()) {
+      el.voHint.textContent = 'This browser has no speech synthesis, so the voice-over cannot be read here. The slides still render.';
+    } else if (!n) {
+      el.voHint.textContent = 'Write a voice-over under a slide and the device reads it as that slide appears. Nothing leaves the tab.';
+    } else if (state.vo.capture) {
+      el.voHint.textContent = n + ' of ' + state.slides.length +
+        ' slides have a voice-over. Generating asks you to share this tab: pick it and tick \u201Cshare audio\u201D to catch the voice in the file.';
+    } else {
+      el.voHint.textContent = n + ' of ' + state.slides.length +
+        ' slides have a voice-over. It plays live while the slides run; tick the box above to catch it in the file.';
+    }
+  }
+
+  /* Must be called from the click itself: the browser only shows the share
+     picker while the user gesture is still live. */
+  function openCapture() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+      toast('This browser cannot capture tab audio - recording silent');
+      return Promise.resolve(false);
+    }
+
+    return navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+      preferCurrentTab: true,
+      selfBrowserSurface: 'include'
+    }).then(function (stream) {
+      if (!stream.getAudioTracks().length) {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        toast('That share carried no audio - recording silent');
+        return false;
+      }
+      captureStream = stream;
+      return true;
+    }).catch(function (err) {
+      toast('Voice-over not captured (' + ((err && err.name) || 'not shared') + ') - recording silent');
+      return false;
+    });
+  }
+
+  function releaseCapture() {
+    if (!captureStream) return;
+    captureStream.getTracks().forEach(function (track) { track.stop(); });
+    captureStream = null;
   }
 
   /* ---------- painting ---------- */
@@ -319,6 +512,7 @@
     var total = totalMs();
     if (t >= total) {
       paint(state.slides.length - 1, 9999);
+      stopVoice();
       setProgress(100);
       el.recPct.textContent = mode === 'record' ? 'Finishing\u2026' : 'Done';
       if (mode === 'record') {
@@ -340,22 +534,31 @@
 
     var at = indexAt(t);
     paint(at.index, at.local);
+
+    /* Each slide gets its own line; the previous one is cut off at the change. */
+    if (at.index !== spokenIndex) {
+      spokenIndex = at.index;
+      var line = narrationOf(state.slides[at.index]);
+      if (line) speak(line);
+    }
+
     setProgress((t / total) * 100);
     el.recPct.textContent = 'Slide ' + (at.index + 1) + ' of ' + state.slides.length +
       ' \u00B7 ' + fmt(t) + ' / ' + fmt(total);
     rafId = requestAnimationFrame(tick);
   }
 
-  function begin(next) {
-    if (mode) return;
+  function begin(next, withAudio) {
+    if (mode) return false;
     if (!state.slides.length) {
       toast('Add a slide first');
-      return;
+      return false;
     }
-    if (next === 'record' && !canRecord()) return;
-    if (next === 'record' && !startRecorder()) return;
+    if (next === 'record' && !canRecord(withAudio)) return false;
+    if (next === 'record' && !startRecorder(withAudio)) return false;
 
     mode = next;
+    spokenIndex = -1;
     selected = 0;
     paintIdle();
     setProgress(0);
@@ -363,16 +566,21 @@
     el.playBtn.textContent = next === 'preview' ? 'Stop' : 'Preview';
     el.recordBtn.disabled = false;
     el.recordBtn.textContent = next === 'record' ? 'Stop' : 'Generate video';
-    el.statLine.textContent = next === 'record' ? 'Recording\u2026' : 'Previewing\u2026';
+    el.statLine.textContent = next === 'record'
+      ? (withAudio ? 'Recording with the voice-over\u2026' : 'Recording\u2026')
+      : 'Previewing\u2026';
 
     startedAt = performance.now();
     rafId = requestAnimationFrame(tick);
+    return true;
   }
 
   function stopPlayback(silent) {
     if (!mode) return;
     var was = mode;
     mode = null;
+    spokenIndex = -1;
+    stopVoice();
     cancelAnimationFrame(rafId);
     el.playBtn.disabled = false;
     el.playBtn.textContent = 'Preview';
@@ -390,23 +598,24 @@
 
   /* ---------- recording ---------- */
 
-  function canRecord() {
+  function canRecord(withAudio) {
     if (!window.MediaRecorder || typeof canvas.captureStream !== 'function') {
       toast('This browser cannot record a canvas - no MediaRecorder support');
       return false;
     }
-    if (!pickMime()) {
+    if (!pickMime(withAudio)) {
       toast('This browser has no supported video format to record');
       return false;
     }
     return true;
   }
 
-  function pickMime() {
+  function pickMime(withAudio) {
     if (!window.MediaRecorder) return '';
-    for (var i = 0; i < MIMES.length; i++) {
+    var list = withAudio ? AUDIO_MIMES : MIMES;
+    for (var i = 0; i < list.length; i++) {
       try {
-        if (MediaRecorder.isTypeSupported(MIMES[i])) return MIMES[i];
+        if (MediaRecorder.isTypeSupported(list[i])) return list[i];
       } catch (err) {
         /* ignore and try the next candidate */
       }
@@ -414,17 +623,27 @@
     return '';
   }
 
-  function startRecorder() {
-    var mime = pickMime();
+  function startRecorder(withAudio) {
+    var mime = pickMime(withAudio);
     if (!mime) return false;
     var stream;
+    var muxed = false;
     try {
       stream = canvas.captureStream(30);
+      if (withAudio && captureStream) {
+        captureStream.getAudioTracks().forEach(function (track) { stream.addTrack(track); });
+        muxed = true;
+      }
       chunks = [];
-      recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6000000 });
+      recorder = new MediaRecorder(stream, {
+        mimeType: mime,
+        videoBitsPerSecond: 6000000,
+        audioBitsPerSecond: 128000
+      });
     } catch (err) {
       toast('Could not start the recorder: ' + (err && err.message ? err.message : 'unknown error'));
       if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
+      releaseCapture();
       recorder = null;
       return false;
     }
@@ -437,8 +656,9 @@
 
     recorder.onstop = function () {
       stream.getTracks().forEach(function (track) { track.stop(); });
+      releaseCapture();
       var type = active.mimeType || mime;
-      finalize(new Blob(chunks, { type: type }), type);
+      finalize(new Blob(chunks, { type: type }), type, muxed);
       recorder = null;
     };
 
@@ -450,7 +670,7 @@
     return true;
   }
 
-  function finalize(blob, type) {
+  function finalize(blob, type, withAudio) {
     el.recordBtn.textContent = 'Generate video';
     el.recordBtn.disabled = false;
     el.playBtn.disabled = false;
@@ -480,7 +700,7 @@
 
     var label = /mp4/i.test(type) ? 'MP4' : /vp9/i.test(type) ? 'WebM \u00B7 VP9' : /vp8/i.test(type) ? 'WebM \u00B7 VP8' : 'WebM';
     el.takeMeta.textContent = label + ' \u00B7 ' + size().w + ' \u00D7 ' + size().h + ' \u00B7 ' +
-      fmt(totalMs()) + ' \u00B7 ' + kb(blob.size) + ' \u00B7 silent';
+      fmt(totalMs()) + ' \u00B7 ' + kb(blob.size) + ' \u00B7 ' + (withAudio ? 'voice-over audio' : 'silent');
 
     toast('Video ready - ' + name);
   }
@@ -550,6 +770,7 @@
         if (!Number.isFinite(value)) return;
         slide.duration = clamp(Math.round(value), MIN_DUR, MAX_DUR);
         refreshMeta();
+        syncEst();
         save();
       });
       dur.addEventListener('blur', function () {
@@ -592,8 +813,74 @@
       side.appendChild(durWrap);
       side.appendChild(tools);
 
+      /* The voice-over line: what this slide says, read by the chosen voice. */
+      var voLine = document.createElement('div');
+      voLine.className = 'vo-line';
+
+      var voField = document.createElement('textarea');
+      voField.className = 'vo-text';
+      voField.rows = 1;
+      voField.maxLength = MAX_VO;
+      voField.placeholder = 'Voice-over for this slide (optional)';
+      voField.value = slide.narration || '';
+      voField.setAttribute('aria-label', 'Slide ' + (index + 1) + ' voice-over');
+      voField.addEventListener('focus', function () { setActive(index); });
+      voField.addEventListener('input', function () {
+        slide.narration = voField.value;
+        syncEst();
+        paintVoHint();
+        save();
+      });
+
+      var say = document.createElement('button');
+      say.type = 'button';
+      say.className = 'say';
+      say.textContent = '\u25B6';
+      say.title = 'Read this voice-over';
+      say.setAttribute('aria-label', 'Read slide ' + (index + 1) + ' voice-over');
+      say.addEventListener('click', function () {
+        setActive(index);
+        paintIdle();
+        if (!narrationOf(slide)) {
+          toast('No voice-over on this slide yet');
+          return;
+        }
+        speak(slide.narration);
+      });
+
+      var est = document.createElement('button');
+      est.type = 'button';
+      est.className = 'est';
+      est.addEventListener('click', function () {
+        var secs = estimate(slide.narration);
+        if (!secs) return;
+        slide.duration = clamp(Math.round(secs), MIN_DUR, MAX_DUR);
+        dur.value = String(slide.duration);
+        refreshMeta();
+        syncEst();
+        save();
+      });
+
+      function syncEst() {
+        var secs = estimate(slide.narration);
+        var over = secs > slide.duration;
+        est.hidden = !secs;
+        est.textContent = secs ? '\u2248' + Math.ceil(secs) + 's' : '';
+        est.classList.toggle('over', over);
+        est.title = over
+          ? 'About ' + Math.ceil(secs) + 's of speech in a ' + slide.duration + 's slide - click to fit the slide to it'
+          : 'About ' + Math.ceil(secs) + 's of speech - click to set the slide to that length';
+      }
+
+      syncEst();
+
+      voLine.appendChild(voField);
+      voLine.appendChild(say);
+      voLine.appendChild(est);
+
       li.appendChild(area);
       li.appendChild(side);
+      li.appendChild(voLine);
       el.slideList.appendChild(li);
       rows.push(li);
     });
@@ -656,7 +943,19 @@
       stopPlayback(false);
       return;
     }
-    begin('record');
+
+    if (!wantsAudio()) {
+      begin('record', false);
+      return;
+    }
+
+    /* Ask for the tab first, while the click is still a live gesture. */
+    el.recordBtn.disabled = true;
+    el.statLine.textContent = 'Waiting for the tab to be shared\u2026';
+    openCapture().then(function (ok) {
+      el.recordBtn.disabled = false;
+      begin('record', ok);
+    });
   });
 
   el.ratioSelect.addEventListener('change', function () {
@@ -674,6 +973,42 @@
 
   el.addSlideBtn.addEventListener('click', addSlide);
 
+  if (el.voiceSelect) {
+    el.voiceSelect.addEventListener('change', function () {
+      state.vo.voiceURI = el.voiceSelect.value;
+      save();
+    });
+  }
+
+  if (el.rateRange) {
+    el.rateRange.addEventListener('input', function () {
+      var value = Number(el.rateRange.value);
+      state.vo.rate = clamp(Number.isFinite(value) ? value : 1, 0.6, 1.6);
+      if (el.rateVal) el.rateVal.textContent = rateLabel();
+      save();
+    });
+    /* Rebuilding the rows is what refreshes every slide's spoken estimate. */
+    el.rateRange.addEventListener('change', function () { buildRows(); });
+  }
+
+  if (el.captureVoice) {
+    el.captureVoice.addEventListener('change', function () {
+      state.vo.capture = el.captureVoice.checked;
+      paintVoHint();
+      save();
+    });
+  }
+
+  if (el.voiceTestBtn) {
+    el.voiceTestBtn.addEventListener('click', function () {
+      if (!synth()) {
+        toast('This browser has no speech synthesis');
+        return;
+      }
+      speak(narrationOf(state.slides[selected]) || 'Apex Video. This is how the voice-over will sound.');
+    });
+  }
+
   el.player.addEventListener('play', function () {
     if (mode === null) el.statLine.textContent = 'Playing the take';
   });
@@ -681,11 +1016,18 @@
   document.addEventListener('keydown', function (event) {
     if (event.key !== 'Escape') return;
     if (mode) stopPlayback(false);
+    else stopVoice();
   });
+
+  function rateLabel() {
+    return (Math.round(state.vo.rate * 100) / 100).toFixed(2).replace(/\.?0+$/, '') + '\u00D7';
+  }
 
   window.addEventListener('pagehide', function () {
     mode = null;
     cancelAnimationFrame(rafId);
+    stopVoice();
+    releaseCapture();
     if (recorder && recorder.state !== 'inactive') {
       try { recorder.stop(); } catch (err) { /* the page is going away */ }
     }
@@ -703,6 +1045,21 @@
   load();
   el.ratioSelect.value = state.ratio;
   el.themeSelect.value = state.theme;
+
+  fillVoices();
+  if (synth()) {
+    var s = synth();
+    if (typeof s.addEventListener === 'function') {
+      s.addEventListener('voiceschanged', fillVoices);
+    } else {
+      s.onvoiceschanged = fillVoices;
+    }
+  }
+  if (el.captureVoice) el.captureVoice.checked = state.vo.capture;
+  if (el.rateRange) el.rateRange.value = String(state.vo.rate);
+  if (el.rateVal) el.rateVal.textContent = rateLabel();
+  paintVoHint();
+
   resizeCanvas();
   buildRows();
   paintIdle();

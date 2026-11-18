@@ -1,3 +1,5 @@
+'use strict';
+
 var CACHE = 'apex-video-v2';
 var SHELL = [
   './',
